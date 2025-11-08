@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 
 from contextlib import nullcontext
 from glob import glob
@@ -55,6 +56,8 @@ if __name__ == "__main__":
     save_str = os.path.join(args.save_str, model)
     os.makedirs(save_str, exist_ok=True)
 
+    # Create timestamp for filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     print(model)
     print(device)
@@ -97,7 +100,7 @@ if __name__ == "__main__":
         prefx = [idx.item() for idx in input_ids[0]]
 
         naive_temp_output = hf_model.generate(input_ids, max_new_tokens=3072, 
-                                return_dict_in_generate=True, output_scores=True, do_sample = True, temperature = temp)
+                                return_dict_in_generate=True, output_scores=True, temperature = temp)
         
         print(tokenizer.decode(naive_temp_output[0][:, len(input_ids[0]):].squeeze().to("cpu"), skip_special_tokens=True))
         print("naive done")
@@ -148,9 +151,16 @@ if __name__ == "__main__":
             "mcmc_answer": mcmc_answer,
         })
 
-    
+        # Save after each problem to avoid losing progress
+        df = pd.DataFrame(results)
+        filename = f"{model}_math_base_power_samp_batch{args.batch_idx}_mcmc{mcmc_steps}_temp{temp}_seed{args.seed}_{timestamp}.csv"
+        df.to_csv(os.path.join(save_str, filename), index=False)
+
+
+    # Final save (redundant but kept for safety)
     df = pd.DataFrame(results)
-    df.to_csv(os.path.join(save_str, model+"_math_base_power_samp_results_" + str(mcmc_steps) + "_" + str(temp) + "_" + str(args.batch_idx)  + "_" + str(args.seed) + ".csv"), index=False)
+    filename = f"{model}_math_base_power_samp_batch{args.batch_idx}_mcmc{mcmc_steps}_temp{temp}_seed{args.seed}_{timestamp}.csv"
+    df.to_csv(os.path.join(save_str, filename), index=False)
     
 
 
