@@ -1,0 +1,50 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Results and data
+results/
+llm_experiments/results/
+*.csv
+*.json
+*.pkl
+*.pickle
+
+# Logs
+*.log
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+bin/
+
+# Model checkpoints
+checkpoints/
+*.pth
+*.pt
+*.bin
+*.safetensors
+
+# Temporary files
+*.tmp
+.DS_Store

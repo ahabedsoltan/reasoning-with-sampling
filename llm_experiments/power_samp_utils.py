@@ -69,13 +69,15 @@ def naive_temp(p : AutoregressiveSampler, context, temp, seq_len):
     device = p.device
     tokenizer = p.tokenizer
     input_ids = torch.tensor([context], dtype=torch.long, device=device)
+    attention_mask = torch.ones_like(input_ids)
     output = p.model.generate(
         input_ids=input_ids,
+        attention_mask=attention_mask,
         max_new_tokens=seq_len - c,
         do_sample=True,
         temperature=temp,
         eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.pad_token_id,
         return_dict_in_generate=True,
         output_scores=True,
         output_logits=True,
@@ -145,11 +147,12 @@ def max_swap(p : AutoregressiveSampler, context, temp, mcmc_steps, max_new_token
                 del log_prob_prop
                 del target_log_prob_cur
 
-        if p.tokenizer.eos_token_id in gen:
-            eos_idx = gen.index(p.tokenizer.eos_token_id)
+        # Only check for EOS in generated portion (after prefix c)
+        if p.tokenizer.eos_token_id in gen[c:]:
+            eos_idx = gen[c:].index(p.tokenizer.eos_token_id) + c
             gen = gen[:eos_idx + 1]
-            log_probs_norm = log_probs_norm[:eos_idx + 1]
-            log_probs_unnorm = log_probs_unnorm[:eos_idx + 1]
+            log_probs_norm = log_probs_norm[:eos_idx + 1 - c]
+            log_probs_unnorm = log_probs_unnorm[:eos_idx + 1 - c]
             acceptance_ratio = acceptances/attempts
             return gen, log_probs_norm, log_probs_unnorm, acceptance_ratio
 
@@ -203,11 +206,12 @@ def mcmc_power_samp(p : AutoregressiveSampler, context, temp, mcmc_steps, max_ne
                 del log_prob_prop
                 del target_log_prob_cur
 
-        if p.tokenizer.eos_token_id in gen:
-            eos_idx = gen.index(p.tokenizer.eos_token_id)
+        # Only check for EOS in generated portion (after prefix c)
+        if p.tokenizer.eos_token_id in gen[c:]:
+            eos_idx = gen[c:].index(p.tokenizer.eos_token_id) + c
             gen = gen[:eos_idx + 1]
-            log_probs_norm = log_probs_norm[:eos_idx + 1]
-            log_probs_unnorm = log_probs_unnorm[:eos_idx + 1]
+            log_probs_norm = log_probs_norm[:eos_idx + 1 - c]
+            log_probs_unnorm = log_probs_unnorm[:eos_idx + 1 - c]
             acceptance_ratio = acceptances/attempts
             return gen, log_probs_norm, log_probs_unnorm, acceptance_ratio
 
@@ -258,6 +262,16 @@ def format_prompt(question, model, tokenizer, cot=True):
         format_str = tokenizer.apply_chat_template(answer_context, tokenize=False, add_generation_prompt=True)
 
     elif model == "tulu":
+        content_str = PROMPT + question
+        if cot:
+            content_str+=COT
+        else:
+            content_str+=BASE
+        answer_context = [{"role": "user", "content": content_str}]
+        format_str = tokenizer.apply_chat_template(answer_context, tokenize=False, add_generation_prompt=True)
+
+    elif model == "nemotron":
+        # Use chat template (proper format for nemotron)
         content_str = PROMPT + question
         if cot:
             content_str+=COT
