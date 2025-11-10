@@ -82,6 +82,10 @@ def naive_temp(p : AutoregressiveSampler, context, temp, seq_len):
         output_scores=True,
         output_logits=True,
     )
+
+    # MEMORY ISSUE: These tensors can be ~250MB each for long sequences (1000 tokens × 32k vocab)
+    # In MCMC, this function is called 160+ times (16 blocks × 10 MCMC steps)
+    # Without cleanup, memory accumulates from ~5GB to 20GB+
     unscaled_logits = torch.stack(output.logits, dim=0)
     scaled_logits = torch.stack(output.scores, dim=0)
     tokens = output.sequences[0][c:]
@@ -96,6 +100,21 @@ def naive_temp(p : AutoregressiveSampler, context, temp, seq_len):
     log_probs_norm = torch.gather(F.log_softmax(scaled_logits, dim=-1), -1, idx).view(-1).tolist()
 
     assert len(tokens) == len(log_probs_unnorm) == len(log_probs_norm)
+
+    # FIX: Explicit cleanup of large tensors to prevent memory leak
+    # Without this, GPU memory grows unbounded during MCMC sampling
+    del unscaled_logits  # Frees ~250MB
+    del scaled_logits    # Frees ~250MB
+    del tokens
+    del idx
+    del output  # Frees the entire generate() output object which holds references
+    del input_ids
+    del attention_mask
+
+    # Force GPU cache cleanup - without this, memory stays allocated until Python GC runs
+    # This is critical for long MCMC chains to stay under 5-6GB
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return prop, log_probs_norm, log_probs_unnorm
 
@@ -124,6 +143,10 @@ def max_swap(p : AutoregressiveSampler, context, temp, mcmc_steps, max_new_token
         log_probs_norm.extend(lp_norm)
         log_probs_unnorm.extend(lp_unnorm)
 
+        # MEMORY FIX: Clean up after extending to avoid holding duplicate references
+        del lp_norm
+        del lp_unnorm
+
         for _ in tqdm(range(mcmc_steps)):
             attempts+=1
             t = len(gen)
@@ -143,9 +166,13 @@ def max_swap(p : AutoregressiveSampler, context, temp, mcmc_steps, max_new_token
                 log_probs_norm[idx-c:] = log_prob_prop.copy()
                 log_probs_unnorm[idx-c:] = target_log_prob_prop.copy()
 
-                del prop
-                del log_prob_prop
-                del target_log_prob_cur
+            # MEMORY FIX: Always clean up proposal and log probs, not just on acceptance
+            # These can accumulate over 160 iterations (16 blocks × 10 MCMC steps)
+            del prop
+            del log_prob_prop
+            del target_log_prob_prop
+            del target_log_prob_cur
+            del log_prob_cur
 
         # Only check for EOS in generated portion (after prefix c)
         if p.tokenizer.eos_token_id in gen[c:]:
@@ -183,6 +210,10 @@ def mcmc_power_samp(p : AutoregressiveSampler, context, temp, mcmc_steps, max_ne
         log_probs_norm.extend(lp_norm)
         log_probs_unnorm.extend(lp_unnorm)
 
+        # MEMORY FIX: Clean up after extending to avoid holding duplicate references
+        del lp_norm
+        del lp_unnorm
+
         for _ in tqdm(range(mcmc_steps)):
             attempts+=1
             t = len(gen)
@@ -202,9 +233,13 @@ def mcmc_power_samp(p : AutoregressiveSampler, context, temp, mcmc_steps, max_ne
                 log_probs_norm[idx-c:] = log_prob_prop.copy()
                 log_probs_unnorm[idx-c:] = target_log_prob_prop.copy()
 
-                del prop
-                del log_prob_prop
-                del target_log_prob_cur
+            # MEMORY FIX: Always clean up proposal and log probs, not just on acceptance
+            # These can accumulate over 160 iterations (16 blocks × 10 MCMC steps)
+            del prop
+            del log_prob_prop
+            del target_log_prob_prop
+            del target_log_prob_cur
+            del log_prob_cur
 
         # Only check for EOS in generated portion (after prefix c)
         if p.tokenizer.eos_token_id in gen[c:]:

@@ -125,8 +125,44 @@ if __name__ == "__main__":
     save_str = os.path.join(args.save_str, model)
     os.makedirs(save_str, exist_ok=True)
 
-    # Create timestamp for filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Check for existing CSV files to resume from
+    existing_results = []
+    completed_questions = set()
+    timestamp = None
+
+    # Look for existing CSV files matching this batch/model/settings
+    pattern = f"{model}_math_base_power_samp_batch{args.batch_idx}_mcmc{args.mcmc_steps}_B{args.block_num}_temp{args.temperature}_seed{args.seed}_*.csv"
+    existing_files = glob(os.path.join(save_str, pattern))
+
+    if existing_files:
+        # Use the most recent file
+        latest_file = max(existing_files, key=os.path.getmtime)
+        print(f"\n{'='*60}")
+        print(f"RESUMING from existing file:")
+        print(f"{latest_file}")
+        print(f"{'='*60}\n")
+
+        try:
+            existing_df = pd.read_csv(latest_file)
+            existing_results = existing_df.to_dict('records')
+            completed_questions = set(existing_df['question'].tolist())
+            print(f"Found {len(existing_results)} completed questions")
+            print(f"Will skip these and continue with remaining questions\n")
+
+            # Extract timestamp from the existing filename (last 2 parts: YYYYMMDD_HHMMSS)
+            filename_parts = os.path.basename(latest_file).replace('.csv', '').split('_')
+            timestamp = '_'.join(filename_parts[-2:])
+        except Exception as e:
+            print(f"Warning: Could not load existing file: {e}")
+            print("Starting fresh...\n")
+            existing_results = []
+            completed_questions = set()
+            timestamp = None
+
+    # Create timestamp for filename if not resuming
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        print(f"Starting new run with timestamp: {timestamp}\n")
 
     print(model)
     print(device)
@@ -169,17 +205,24 @@ if __name__ == "__main__":
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    hf_model = transformers.AutoModelForCausalLM.from_pretrained(model_str, torch_dtype="auto", device_map="auto", trust_remote_code = True).to(device)
+    hf_model = transformers.AutoModelForCausalLM.from_pretrained(model_str, dtype="auto", device_map="auto", trust_remote_code = True)
     autoreg_sampler = AutoregressiveSampler(hf_model, tokenizer, device)
 
+
     print("loaded models")
-    results = []
+    results = existing_results  # Start with existing results if resuming
 
     start = 100*args.batch_idx
     end = 100*(args.batch_idx+1)
 
     for problem, data in tqdm(enumerate(dataset[start:end]), desc = "Benchmark on MATH"):
         question = data["prompt"]
+
+        # Skip if this question was already completed
+        if question in completed_questions:
+            print(f"\n[SKIPPING] Question already completed: {question[:80]}...\n")
+            continue
+
         print(question)
         answer = data["answer"]
 
@@ -191,14 +234,18 @@ if __name__ == "__main__":
         naive_start_time = time.time()
         attention_mask = torch.ones_like(input_ids)
         naive_temp_output = hf_model.generate(input_ids, attention_mask=attention_mask, max_new_tokens=16000,
-                                return_dict_in_generate=True, output_scores=True, temperature = temp,
-                                pad_token_id=tokenizer.pad_token_id)
+                                return_dict_in_generate=True, output_scores=True, temperature=temp,
+                                do_sample=True, pad_token_id=tokenizer.pad_token_id)
         naive_elapsed_time = time.time() - naive_start_time
 
         naive_generated_ids = naive_temp_output[0][:, len(input_ids[0]):].squeeze().to("cpu")
         naive_completion = tokenizer.decode(naive_generated_ids, skip_special_tokens=True)
         naive_total_logprob, naive_avg_logprob, _ = extract_log_probs(naive_temp_output, naive_generated_ids)
         naive_num_tokens = len(naive_generated_ids) if naive_generated_ids.dim() == 1 else naive_generated_ids.shape[0]
+
+        # Delete output tensors to free GPU memory
+        del naive_temp_output
+        torch.cuda.empty_cache()
 
         print(f"\n{'='*60}")
         print("NAIVE (low temp) DONE:")
@@ -219,6 +266,10 @@ if __name__ == "__main__":
         std_completion = tokenizer.decode(std_generated_ids, skip_special_tokens=True)
         std_total_logprob, std_avg_logprob, _ = extract_log_probs(std_output, std_generated_ids)
         std_num_tokens = len(std_generated_ids) if std_generated_ids.dim() == 1 else std_generated_ids.shape[0]
+
+        # Delete output tensors to free GPU memory
+        del std_output
+        torch.cuda.empty_cache()
 
         print(f"\n{'='*60}")
         print("STD (temp=1.0) DONE:")
@@ -289,12 +340,24 @@ if __name__ == "__main__":
         filename = f"{model}_math_base_power_samp_batch{args.batch_idx}_mcmc{mcmc_steps}_B{args.block_num}_temp{temp}_seed{args.seed}_{timestamp}.csv"
         df.to_csv(os.path.join(save_str, filename), index=False)
 
+        # Clear GPU cache after each problem to prevent memory accumulation
+        torch.cuda.empty_cache()
+
 
     # Final save (redundant but kept for safety)
     df = pd.DataFrame(results)
     filename = f"{model}_math_base_power_samp_batch{args.batch_idx}_mcmc{mcmc_steps}_B{args.block_num}_temp{temp}_seed{args.seed}_{timestamp}.csv"
-    df.to_csv(os.path.join(save_str, filename), index=False)
-    
+    full_path = os.path.join(save_str, filename)
+    df.to_csv(full_path, index=False)
+
+    # Print final summary
+    print(f"\n{'='*60}")
+    print(f"COMPLETED!")
+    print(f"Total questions in results: {len(results)}")
+    print(f"Questions completed this run: {len(results) - len(existing_results)}")
+    print(f"Saved to: {full_path}")
+    print(f"{'='*60}\n")
+
 
 
 
